@@ -1,0 +1,10 @@
+pandas
+numpy
+requests
+xgboost
+catboost
+scikit-learn
+ta
+plotly
+streamlit
+streamlit-autorefresh
