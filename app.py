@@ -13,7 +13,6 @@ import requests
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fetch_store import load_from_db
 from features import build_features
 import features as feat_mod
 import xgboost as xgb
@@ -100,11 +99,51 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # CACHED FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
+def fetch_training_data(days=30):
+    """Fetch historical 5-min candles from Coinbase API for model training."""
+    GRAN = 300
+    all_candles = []
+    end_ts  = int(time.time())
+    start_ts = end_ts - days * 24 * 3600
+    cur_end  = end_ts
+    while cur_end > start_ts:
+        cur_start = max(cur_end - 300 * GRAN, start_ts)
+        try:
+            r = requests.get(
+                'https://api.exchange.coinbase.com/products/BTC-USD/candles',
+                params={'granularity': GRAN, 'start': cur_start, 'end': cur_end},
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data and isinstance(data, list):
+                    all_candles.extend(data)
+        except Exception:
+            pass
+        cur_end = cur_start - GRAN
+        time.sleep(0.35)
+    if not all_candles:
+        return pd.DataFrame()
+    df = pd.DataFrame(all_candles, columns=['time', 'low', 'high', 'open', 'close', 'volume'])
+    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_localize(None)
+    df = df[['time', 'open', 'high', 'low', 'close', 'volume']].astype(
+        {'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+    return df.drop_duplicates('time').sort_values('time').reset_index(drop=True)
+
+
 @st.cache_resource(show_spinner=False)
 def load_and_train():
-    df_raw = load_from_db()
-    df_raw = df_raw.sort_values('time').reset_index(drop=True)
-    df_raw['time'] = pd.to_datetime(df_raw['time'])
+    # Try local DB first (works when running locally), fall back to Coinbase API
+    df_raw = pd.DataFrame()
+    try:
+        from fetch_store import load_from_db
+        df_raw = load_from_db()
+        df_raw = df_raw.sort_values('time').reset_index(drop=True)
+        df_raw['time'] = pd.to_datetime(df_raw['time'])
+    except Exception:
+        pass
+    if len(df_raw) < 1000:
+        df_raw = fetch_training_data(days=30)
     data  = build_features(df_raw)
     FC    = feat_mod.FEATURE_COLS
     valid = data[FC + ['target']].dropna()
